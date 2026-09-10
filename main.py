@@ -1,0 +1,116 @@
+"""入口：初始化客户端 → 查询状态 → 定位校验 → 打卡 → 推送结果。
+
+v1.0 主路径：直接使用 App 免登 token（获取方式见 docs/protocol.md），
+无需在脚本里保存学号密码。CAS 自动登录为可选增强（src/login.py）。
+"""
+from src.config import load_config
+from src.checkin import AttnClient, query_today_task, do_checkin
+from src.notify import notify
+from src.vacation import matched_range, today_cn
+from src.campus import match_campus
+
+import re
+
+import requests
+
+
+def _save_token(cfg, token: str):
+    """把新 token 回写到 config.yaml（避免每次运行都重新登录）。"""
+    try:
+        path = cfg.get("_config_path")
+        if not path:
+            return
+        text = open(path, encoding="utf-8").read()
+        new_text, n = re.subn(
+            r'(token:\s*")([^"]*)(")', rf"\g<1>{token}\g<3>", text, count=1
+        )
+        if n:
+            open(path, "w", encoding="utf-8").write(new_text)
+            print("新 token 已回写 config.yaml")
+    except Exception as e:
+        print(f"token 回写失败（不影响本次运行）: {e}")
+
+
+def main():
+    cfg = load_config()
+
+    # 假期自动跳过：命中校历/自定义区间时什么都不做（默认静默）
+    vac = matched_range(cfg)
+    if vac:
+        print(f"假期中（{vac}），跳过本次签到。今天是 {today_cn()}。")
+        if (cfg.get("vacation") or {}).get("notify"):
+            notify(cfg, f"智汇福大晚点名：假期中，已跳过（{vac}）", "假期期间自动签到暂停。")
+        return
+
+    # 定位签到护栏：每日签前校验配置坐标必须落在校区范围内（软约束，防误填/防离校代签）
+    try:
+        lng = float((cfg.get("checkin") or {}).get("longitude"))
+        lat = float((cfg.get("checkin") or {}).get("latitude"))
+    except (TypeError, ValueError):
+        lng = lat = 0.0
+    campus = match_campus(lng, lat, cfg)
+    if campus is None:
+        title = "智汇福大晚点名：坐标不在校区范围，已拦截 ❌"
+        print(f"{title} 坐标=({lng}, {lat})")
+        notify(cfg, title, "配置的坐标不在任何校区范围内，今日签到已拦截。请核对 config.yaml 的 checkin.longitude / latitude。")
+        return
+    print(f"定位护栏通过：坐标 ({lng}, {lat}) 命中「{campus}」")
+
+    token = (cfg.get("user") or {}).get("token", "")
+    if not token:
+        username = (cfg.get("user") or {}).get("username", "")
+        password = (cfg.get("user") or {}).get("password", "")
+        if not (username and password):
+            raise SystemExit(
+                "config.yaml 未配置 token，且学号/密码不全（学号密码=智汇福大 App 登录账号）"
+            )
+        from src.login import login as sso_login
+
+        token = sso_login(username, password)
+        print("SSO 登录成功，已获取新 token")
+        _save_token(cfg, token)
+
+    client = AttnClient(token)
+    try:
+        status = query_today_task(client, cfg)
+    except requests.HTTPError as e:
+        # 跨午夜时段（约 0:00-1:00）服务器尚未发布当日计划时会返回 500，
+        # 属正常现象；定时任务设在 21:35/21:50 不受影响。
+        title = "智汇福大晚点名：服务器暂未返回今日计划"
+        print(title, e)
+        notify(cfg, title, "服务器暂时无今日计划数据（跨天时段/服务波动），本次跳过。稍后自动重试无需操作。")
+        return
+    init_data = status["init"]
+
+    if not status["need_checkin"]:
+        title = "智汇福大晚点名：已签到 / 无需操作"
+        print(title)
+        notify(cfg, title, "今日晚点名已处理，无需重复签到。")
+        return
+
+    if not init_data.get("schoolData"):
+        title = "智汇福大晚点名：今日无考勤计划"
+        print(title)
+        notify(cfg, title, "服务器未返回签到范围（可能今日无晚点名），未执行打卡。")
+        return
+
+    try:
+        ok = do_checkin(client, cfg, init_data)
+    except Exception as e:  # 接口报错（如不在时段/范围）要带原因推送
+        title = "智汇福大晚点名：签到失败 ❌"
+        print(title, e)
+        notify(cfg, title, f"自动签到失败：{e}\n请手动打开 App 签到。")
+        return
+
+    if ok:
+        title = "智汇福大晚点名：签到成功 ✅"
+        print(title)
+        notify(cfg, title, "今日晚点名已自动签到成功。")
+    else:
+        title = "智汇福大晚点名：不在签到范围 ❌"
+        print(title)
+        notify(cfg, title, "定位校验未命中任何校区，请确认配置的经纬度。")
+
+
+if __name__ == "__main__":
+    main()
