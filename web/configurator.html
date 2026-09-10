@@ -7,6 +7,7 @@
 <style>
   :root { --brand:#4f6ef2; --bg:#f6f7fb; --card:#fff; --line:#e5e8f0; --txt:#1c2333; --sub:#6b7280; --ok:#16a34a; }
   * { box-sizing:border-box; margin:0; padding:0; }
+  html { scroll-behavior:smooth; }
   body { font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--txt); line-height:1.6; padding:24px 12px 80px; }
   .wrap { max-width:640px; margin:0 auto; }
   h1 { font-size:22px; margin-bottom:4px; }
@@ -283,15 +284,9 @@ document.getElementById('agree2').addEventListener('change', e => {
   document.getElementById('deploy').disabled = !e.target.checked;
 });
 
-// —— 分流：先选有没有 GitHub 账号，跳到对应步骤 ——
-document.getElementById('btnNoAcc').addEventListener('click', e => {
-  e.preventDefault();
-  document.getElementById('step4card').scrollIntoView({ behavior: 'smooth' });
-});
-document.getElementById('btnHasAcc').addEventListener('click', e => {
-  e.preventDefault();
-  document.getElementById('step5card').scrollIntoView({ behavior: 'smooth' });
-});
+// —— 分流：先选有没有 GitHub 账号 ——
+// 两个按钮是原生锚点跳转（href="#step4card" / "#step5card"），配合 html{scroll-behavior:smooth}，
+// 完全不依赖 JS，任何环境/缓存/脚本异常都能正常跳转。
 
 // —— 生成 ——
 document.getElementById('gen').addEventListener('click', () => {
